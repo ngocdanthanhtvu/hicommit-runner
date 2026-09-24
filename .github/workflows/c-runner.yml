@@ -25,6 +25,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Get HiCommit OIDC token
+        run: |
+          oidc_response=$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hicommit-backend")
+
+          oidc_token=$(echo "$oidc_response" | jq -r '.value')
+
+          if [ -z "$oidc_token" ] || [ "$oidc_token" = "null" ]; then
+            echo "ERROR: Failed to obtain GitHub OIDC token."
+            exit 1
+          fi
+
+          echo "::add-mask::$oidc_token"
+          echo "HICOMMIT_OIDC_TOKEN=$oidc_token" >> "$GITHUB_ENV"
+
       - name: Send Pending Status to API
         run: |
           branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
@@ -65,6 +81,7 @@ jobs:
           echo "JSON Payload: $json_payload"
           
           curl -X POST "$api_url" \
+            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$json_payload"
 
@@ -172,6 +189,7 @@ jobs:
             }')
           echo "JSON Payload: $json_payload"
           curl -X POST "$api_url" \
+            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$json_payload"
       - name: Fetch Test Cases from API
@@ -258,6 +276,7 @@ jobs:
           echo "JSON Payload: $json_payload"
 
           curl -X POST "$api_url" \
+            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$json_payload"
 
@@ -439,6 +458,7 @@ jobs:
           echo "JSON Payload: $json_payload"
           
           curl -X POST "$api_url" \
+            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$json_payload"
         env:
