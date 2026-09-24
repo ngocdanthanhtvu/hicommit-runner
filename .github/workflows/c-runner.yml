@@ -2,6 +2,11 @@ name: HiCommit C Runner
 
 on:
   workflow_call:
+    inputs:
+      api_base_url:
+        description: HiCommit backend base URL
+        required: true
+        type: string
 
 jobs:
   build:
@@ -16,6 +21,7 @@ jobs:
       EXECUTION_ENVIRONMENT: ubuntu-24.04
       TELEMETRY_RUNNER_VERSION: 1.0.0
       SCHEMA_VERSION: '1.0'
+      HICOMMIT_API_BASE_URL: ${{ inputs.api_base_url }}
 
     steps:
       - name: Record start time
@@ -44,7 +50,7 @@ jobs:
       - name: Send Pending Status to API
         run: |
           branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="https://turbo-fortnight-xg7pwq7j4vxfjg-5174.app.github.dev/problems/$branch_name/submission/result"
+          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
           
           # Mã hóa file Main.java thành base64
           encoded_code=$(base64 -w 0 main.c)
@@ -138,7 +144,7 @@ jobs:
           duration=$((end_time - start_time))
           echo "DURATION=$duration" >> $GITHUB_ENV
           branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="https://turbo-fortnight-xg7pwq7j4vxfjg-5174.app.github.dev/problems/$branch_name/submission/result"
+          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
           
           # Mã hóa file main.c thành base64
           encoded_code=$(base64 -w 0 main.c)
@@ -197,7 +203,7 @@ jobs:
         if: success()
         run: |
           branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="https://turbo-fortnight-xg7pwq7j4vxfjg-5174.app.github.dev/problems/$branch_name/testcases"
+          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/testcases"
 
           curl --fail-with-body -sS "$api_url" \
             -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
@@ -221,7 +227,7 @@ jobs:
           duration=$((end_time - start_time))
 
           branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="https://turbo-fortnight-xg7pwq7j4vxfjg-5174.app.github.dev/problems/$branch_name/submission/result"
+          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
 
           encoded_code=$(base64 -w 0 main.c)
 
@@ -398,7 +404,7 @@ jobs:
         if: success()
         run: |
           branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="https://turbo-fortnight-xg7pwq7j4vxfjg-5174.app.github.dev/problems/$branch_name/submission/result"
+          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
           
           # Mã hóa file main.c thành base64
           encoded_code=$(base64 -w 0 main.c)
