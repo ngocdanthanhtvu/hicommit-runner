@@ -13,465 +13,231 @@ jobs:
     permissions:
       contents: read
       id-token: write
-
     runs-on: ubuntu-24.04
-
-    env:
-      TEST_TIMEOUT_MS: 2000
-      EXECUTION_ENVIRONMENT: ubuntu-24.04
-      TELEMETRY_RUNNER_VERSION: 1.0.0
-      SCHEMA_VERSION: '1.0'
-      HICOMMIT_API_BASE_URL: ${{ inputs.api_base_url }}
-
+    timeout-minutes: 15
     steps:
-      - name: Record start time
-        id: start_time
-        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
-        
-      - name: Checkout code
+      - name: Checkout student source
         uses: actions/checkout@v7
-
-      - name: Get HiCommit OIDC token
-        run: |
-          oidc_response=$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hicommit-backend")
-
-          oidc_token=$(echo "$oidc_response" | jq -r '.value')
-
-          if [ -z "$oidc_token" ] || [ "$oidc_token" = "null" ]; then
-            echo "ERROR: Failed to obtain GitHub OIDC token."
-            exit 1
-          fi
-
-          echo "::add-mask::$oidc_token"
-          echo "HICOMMIT_OIDC_TOKEN=$oidc_token" >> "$GITHUB_ENV"
-
-      - name: Send Pending Status to API
-        run: |
-          branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
-          
-          # Mã hóa file Main.java thành base64
-          encoded_code=$(base64 -w 0 main.c)
-          
-          json_payload=$(jq -n \
-              --arg branch "$branch_name" \
-              --arg actor "${{ github.actor }}" \
-              --arg job_name "${{ github.job }}" \
-              --arg run_id "${{ github.run_id }}" \
-              --arg run_attempt "${{ github.run_attempt }}" \
-              --arg workflow_name "${{ github.workflow }}" \
-              --arg execution_environment "$EXECUTION_ENVIRONMENT" \
-              --arg architecture "${{ runner.arch }}" \
-              --arg runner_version "$TELEMETRY_RUNNER_VERSION" \
-              --arg schema_version "$SCHEMA_VERSION" \
-              --arg sha "${{ github.sha }}" \
-              --arg status "pending" \
-              --arg code "$encoded_code" \
-              '{
-                problem: $branch,
-                actor: $actor,
-                job_name: $job_name,
-                run_id: $run_id,
-                run_attempt: ($run_attempt | tonumber),
-                workflow_name: $workflow_name,
-                execution_environment: $execution_environment,
-                architecture: $architecture,
-                runner_version: $runner_version,
-                schema_version: $schema_version,
-                sha: $sha,
-                status: $status,
-                code: $code
-              }')
-          echo "JSON Payload: $json_payload"
-          
-          curl -X POST "$api_url" \
-            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$json_payload"
-
-      - name: Set up C Compiler and Libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc cmake git curl
-          # Download and install jq-1.5-1
-          curl -LO https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64
-          chmod +x jq-linux64
-          sudo mv jq-linux64 /usr/local/bin/jq
-      - name: Compile Code
-        id: compile
-        run: |
-          compiler="gcc"
-          compiler_version=$(gcc --version | head -n 1)
-          compile_command="gcc -o my_program main.c -std=c99"
-
-          echo "COMPILER=$compiler" >> "$GITHUB_ENV"
-          echo "COMPILER_VERSION=$compiler_version" >> "$GITHUB_ENV"
-          echo "COMPILE_COMMAND=$compile_command" >> "$GITHUB_ENV"
-
-          compile_start_ns=$(date +%s%N)
-
-          set +e
-          gcc -o my_program main.c -std=c99 \
-            > compile_stdout.txt \
-            2> compile_stderr.txt
-          compile_exit_code=$?
-          set -e
-
-          compile_end_ns=$(date +%s%N)
-          compile_duration_ms=$(( (compile_end_ns - compile_start_ns) / 1000000 ))
-
-          echo "COMPILE_EXIT_CODE=$compile_exit_code" >> "$GITHUB_ENV"
-          echo "COMPILE_DURATION_MS=$compile_duration_ms" >> "$GITHUB_ENV"
-
-          echo "=== COMPILE TELEMETRY ==="
-          echo "Exit code: $compile_exit_code"
-          echo "Duration ms: $compile_duration_ms"
-          echo "--- stdout ---"
-          cat compile_stdout.txt
-          echo "--- stderr ---"
-          cat compile_stderr.txt
-
-          if [ "$compile_exit_code" -ne 0 ]; then
-            exit "$compile_exit_code"
-          fi
-      - name: Handle Compile Failure
-        if: ${{ failure() && steps.compile.outcome == 'failure' }}
-        run: |
-          end_time=$(date +%s)
-          start_time=${{ env.START_TIME }}
-          duration=$((end_time - start_time))
-          echo "DURATION=$duration" >> $GITHUB_ENV
-          branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
-          
-          # Mã hóa file main.c thành base64
-          encoded_code=$(base64 -w 0 main.c)
-          json_payload=$(jq -n \
-            --arg branch "$branch_name" \
-            --arg actor "${{ github.actor }}" \
-            --arg job_name "${{ github.job }}" \
-            --arg run_id "${{ github.run_id }}" \
-            --arg run_attempt "${{ github.run_attempt }}" \
-            --arg workflow_name "${{ github.workflow }}" \
-            --arg execution_environment "$EXECUTION_ENVIRONMENT" \
-            --arg architecture "${{ runner.arch }}" \
-            --arg runner_version "$TELEMETRY_RUNNER_VERSION" \
-            --arg schema_version "$SCHEMA_VERSION" \
-            --arg sha "${{ github.sha }}" \
-            --arg status "compile_error" \
-            --arg duration "$duration" \
-            --arg compile_exit_code "$COMPILE_EXIT_CODE" \
-            --arg compile_duration_ms "$COMPILE_DURATION_MS" \
-            --arg compiler "$COMPILER" \
-            --arg compiler_version "$COMPILER_VERSION" \
-            --arg compile_command "$COMPILE_COMMAND" \
-            --arg compile_stdout "$(cat compile_stdout.txt)" \
-            --arg compile_stderr "$(cat compile_stderr.txt)" \
-            --arg code "$encoded_code" \
-            '{
-              problem: $branch,
-              actor: $actor,
-              job_name: $job_name,
-              run_id: $run_id,
-              run_attempt: ($run_attempt | tonumber),
-              workflow_name: $workflow_name,
-              execution_environment: $execution_environment,
-              architecture: $architecture,
-              runner_version: $runner_version,
-              schema_version: $schema_version,
-              sha: $sha,
-              status: $status,
-              duration: ($duration | tonumber),
-              compile_exit_code: ($compile_exit_code | tonumber),
-              compile_duration_ms: ($compile_duration_ms | tonumber),
-              compiler: $compiler,
-              compiler_version: $compiler_version,
-              compile_command: $compile_command,
-              compile_stdout: $compile_stdout,
-              compile_stderr: $compile_stderr,
-              code: $code
-            }')
-          echo "JSON Payload: $json_payload"
-          curl -X POST "$api_url" \
-            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$json_payload"
-      - name: Fetch Test Cases from API
-        id: fetch_testcases
-        if: success()
-        run: |
-          branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/testcases"
-
-          curl --fail-with-body -sS "$api_url" \
-            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
-            -o test_cases.json
-
-          jq -e 'type == "array"' test_cases.json > /dev/null
-
-          testcase_count=$(jq 'length' test_cases.json)
-
-          echo "Fetched test cases: $testcase_count"
-
-          if [ "$testcase_count" -eq 0 ]; then
-            echo "ERROR: No test cases received from API."
-            exit 1
-          fi
-      - name: Handle Testcase Fetch Failure
-        if: ${{ failure() && steps.fetch_testcases.outcome == 'failure' }}
-        run: |
-          end_time=$(date +%s)
-          start_time=${{ env.START_TIME }}
-          duration=$((end_time - start_time))
-
-          branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
-
-          encoded_code=$(base64 -w 0 main.c)
-
-          json_payload=$(jq -n \
-            --arg branch "$branch_name" \
-            --arg actor "${{ github.actor }}" \
-            --arg job_name "${{ github.job }}" \
-            --arg run_id "${{ github.run_id }}" \
-            --arg run_attempt "${{ github.run_attempt }}" \
-            --arg workflow_name "${{ github.workflow }}" \
-            --arg execution_environment "$EXECUTION_ENVIRONMENT" \
-            --arg architecture "${{ runner.arch }}" \
-            --arg runner_version "$TELEMETRY_RUNNER_VERSION" \
-            --arg schema_version "$SCHEMA_VERSION" \
-            --arg sha "${{ github.sha }}" \
-            --arg status "error" \
-            --arg error_type "infrastructure_error" \
-            --arg error_stage "fetch_testcases" \
-            --arg duration "$duration" \
-            --arg compile_exit_code "$COMPILE_EXIT_CODE" \
-            --arg compile_duration_ms "$COMPILE_DURATION_MS" \
-            --arg compiler "$COMPILER" \
-            --arg compiler_version "$COMPILER_VERSION" \
-            --arg compile_command "$COMPILE_COMMAND" \
-            --arg compile_stdout "$(cat compile_stdout.txt)" \
-            --arg compile_stderr "$(cat compile_stderr.txt)" \
-            --arg code "$encoded_code" \
-            '{
-              problem: $branch,
-              actor: $actor,
-              job_name: $job_name,
-              run_id: $run_id,
-              run_attempt: ($run_attempt | tonumber),
-              workflow_name: $workflow_name,
-              execution_environment: $execution_environment,
-              architecture: $architecture,
-              runner_version: $runner_version,
-              schema_version: $schema_version,
-              sha: $sha,
-              status: $status,
-              error_type: $error_type,
-              error_stage: $error_stage,
-              duration: ($duration | tonumber),
-              compile_exit_code: ($compile_exit_code | tonumber),
-              compile_duration_ms: ($compile_duration_ms | tonumber),
-              compiler: $compiler,
-              compiler_version: $compiler_version,
-              compile_command: $compile_command,
-              compile_stdout: $compile_stdout,
-              compile_stderr: $compile_stderr,
-              code: $code
-            }')
-
-          echo "JSON Payload: $json_payload"
-
-          curl -X POST "$api_url" \
-            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$json_payload"
-
-      - name: Run Tests
-        if: success()
-        id: run_tests
-        run: |
-          pass_count=0
-          total_count=0
-          results="[]"
-          overall_status="passed"
-          testset_version=$(jq -r '.[0].testset_version // empty' test_cases.json)
-          jq -c '.[]' test_cases.json > test_cases_list.txt
-          while IFS= read -r test_case; do
-            id=$(echo "$test_case" | jq -r '.id')
-            testcase_version=$(echo "$test_case" | jq -r '.testcase_version // empty')
-            input=$(echo "$test_case" | jq -r '.input')
-            expected_output=$(echo "$test_case" | jq -r '.output')
-            echo "Running test with ID: $id"
-            echo "Input: $input"
-            echo "Expected Output: $expected_output"
-            # Run the program with timeout and collect telemetry
-            test_start_ns=$(date +%s%N)
-
-            set +e
-            timeout_seconds=$(awk -v ms="$TEST_TIMEOUT_MS" 'BEGIN { printf "%.3f", ms / 1000 }')
-            echo "$input" | timeout "${timeout_seconds}s" ./my_program > output.txt 2> error.txt
-            test_exit_code=$?
-            set -e
-
-            test_end_ns=$(date +%s%N)
-            test_duration_ms=$(( (test_end_ns - test_start_ns) / 1000000 ))
-
-            test_stderr=$(cat error.txt)
-
-            test_signal=""
-            if [ "$test_exit_code" -gt 128 ]; then
-              test_signal=$((test_exit_code - 128))
-            fi
-
-            if [ "$test_exit_code" -eq 124 ]; then
-              echo "Test $id timed out!"
-              result_status="timeout"
-              actual_output=$(cat output.txt)
-              overall_status="error"
-            elif [ "$test_exit_code" -ne 0 ]; then
-              echo "Test $id encountered an error!"
-              result_status="error"
-              actual_output=$(cat output.txt)
-              overall_status="error"
-            else
-              sed -i -e '$a\' output.txt
-              actual_output=$(cat output.txt)
-              echo "Actual Output: $actual_output"
-
-              if [ "$actual_output" == "$expected_output" ]; then
-                echo "Test $id passed!"
-                result_status="passed"
-                pass_count=$((pass_count + 1))
-              else
-                echo "Test $id failed!"
-                result_status="failed"
-                overall_status="failed"
-              fi
-            fi
-            echo "---------------------------"
-            # Append the new result to the JSON array
-            results=$(echo "$results" | jq \
-              --arg id "$id" \
-              --arg testcase_version "$testcase_version" \
-              --arg input "$input" \
-              --arg expected_output "$expected_output" \
-              --arg actual_output "$actual_output" \
-              --arg status "$result_status" \
-              --arg stderr "$test_stderr" \
-              --arg exit_code "$test_exit_code" \
-              --arg duration_ms "$test_duration_ms" \
-              --arg timeout_ms "$TEST_TIMEOUT_MS" \
-              --arg signal "$test_signal" \
-              '. += [{
-                "id": $id,
-                "testcase_version": $testcase_version,
-                "input": $input,
-                "expected_output": $expected_output,
-                "actual_output": $actual_output,
-                "status": $status,
-                "exit_code": ($exit_code | tonumber),
-                "stderr": $stderr,
-                "duration_ms": ($duration_ms | tonumber),
-                "timeout_ms": ($timeout_ms | tonumber),
-                "signal": (if $signal == "" then null else ($signal | tonumber) end)
-              }]')
-            total_count=$((total_count + 1))
-          done < test_cases_list.txt
-          # Log results for debugging
-          echo "Results JSON: $results"
-          echo "Overall Status: $overall_status"
-          echo "Total: $total_count"
-          echo "Pass Count: $pass_count"
-          
-          # Encode JSON for safe export to GitHub Actions environment
-          encoded_results=$(echo "$results" | jq -c .)
-          echo "RESULTS_JSON=$encoded_results" >> $GITHUB_ENV
-          echo "OVERALL_STATUS=$overall_status" >> $GITHUB_ENV
-          echo "PASS_COUNT=$pass_count" >> $GITHUB_ENV
-          echo "TOTAL_COUNT=$total_count" >> $GITHUB_ENV
-          echo "TESTSET_VERSION=$testset_version" >> $GITHUB_ENV
-      - name: Record end time and calculate duration
-        id: end_time
-        if: success()
-        run: |
-          end_time=$(date +%s)
-          start_time=${{ env.START_TIME }}
-          duration=$((end_time - start_time))
-          echo "DURATION=$duration" >> $GITHUB_ENV
-      - name: Post Test Results
-        if: success()
-        run: |
-          branch_name=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-          api_url="$HICOMMIT_API_BASE_URL/problems/$branch_name/submission/result"
-          
-          # Mã hóa file main.c thành base64
-          encoded_code=$(base64 -w 0 main.c)
-      
-          json_payload=$(jq -n \
-              --arg branch "$branch_name" \
-              --arg actor "${{ github.actor }}" \
-              --arg job_name "${{ github.job }}" \
-              --arg run_id "${{ github.run_id }}" \
-              --arg run_attempt "${{ github.run_attempt }}" \
-              --arg workflow_name "${{ github.workflow }}" \
-              --arg execution_environment "$EXECUTION_ENVIRONMENT" \
-              --arg architecture "${{ runner.arch }}" \
-              --arg runner_version "$TELEMETRY_RUNNER_VERSION" \
-              --arg schema_version "$SCHEMA_VERSION" \
-              --arg sha "${{ github.sha }}" \
-              --arg status "$OVERALL_STATUS" \
-              --arg result "$RESULTS_JSON" \
-              --arg pass_count "$PASS_COUNT" \
-              --arg total_count "$TOTAL_COUNT" \
-              --arg testset_version "$TESTSET_VERSION" \
-              --arg duration "$DURATION" \
-              --arg compile_exit_code "$COMPILE_EXIT_CODE" \
-              --arg compile_duration_ms "$COMPILE_DURATION_MS" \
-              --arg compiler "$COMPILER" \
-              --arg compiler_version "$COMPILER_VERSION" \
-              --arg compile_command "$COMPILE_COMMAND" \
-              --arg compile_stdout "$(cat compile_stdout.txt)" \
-              --arg compile_stderr "$(cat compile_stderr.txt)" \
-              --arg code "$encoded_code" \
-              '{
-                problem: $branch,
-                actor: $actor,
-                job_name: $job_name,
-                run_id: $run_id,
-                run_attempt: ($run_attempt | tonumber),
-                workflow_name: $workflow_name,
-                execution_environment: $execution_environment,
-                architecture: $architecture,
-                runner_version: $runner_version,
-                schema_version: $schema_version,
-                sha: $sha,
-                status: $status,
-                result: ($result | fromjson),
-                pass_count: ($pass_count | tonumber),
-                total_count: ($total_count | tonumber),
-                testset_version: $testset_version,
-                duration: ($duration | tonumber),
-                compile_exit_code: ($compile_exit_code | tonumber),
-                compile_duration_ms: ($compile_duration_ms | tonumber),
-                compiler: $compiler,
-                compiler_version: $compiler_version,
-                compile_command: $compile_command,
-                compile_stdout: $compile_stdout,
-                compile_stderr: $compile_stderr,
-                code: $code
-              }')
-      
-          echo "JSON Payload: $json_payload"
-          
-          curl -X POST "$api_url" \
-            -H "Authorization: Bearer $HICOMMIT_OIDC_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$json_payload"
+        with:
+          persist-credentials: false
+      - name: Grade and deliver result
         env:
-          RESULTS_JSON: ${{ env.RESULTS_JSON }}
-          OVERALL_STATUS: ${{ env.OVERALL_STATUS }}
-          PASS_COUNT: ${{ env.PASS_COUNT }}
-          TOTAL_COUNT: ${{ env.TOTAL_COUNT }}
-          DURATION: ${{ env.DURATION }}
+          HICOMMIT_API_BASE_URL: ${{ inputs.api_base_url }}
+        run: |
+          python3 - <<'PYTHON'
+          """Embedded in c-runner.yml; stdlib only. Student code runs in a networkless container."""
+          import base64
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import uuid
+
+          TIMEOUT_MS = 2000
+          OUTPUT_LIMIT = 32768
+          IMAGE = 'gcc@sha256:6f37e44a9b41181de5dd97366ec732652f5d895a72b5549c64694efed50a97e8'
+
+          class InfrastructureError(Exception):
+              pass
+
+          def request(method, url, data=None, headers=None):
+              """Never redirect a bearer token to another host."""
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, *args):
+                      return None
+              req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+              return urllib.request.build_opener(NoRedirect).open(req, timeout=20)
+
+          def oidc_token():
+              url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']
+              separator = '&' if '?' in url else '?'
+              with request('GET', url + separator + 'audience=hicommit-backend', headers={
+                  'Authorization': 'Bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']
+              }) as response:
+                  token = json.load(response)['value']
+              # Token is not written to GITHUB_ENV, payload files, artifacts, or subprocess environments.
+              print('::add-mask::' + token, flush=True)
+              return token
+
+          def api(method, url, payload=None, attempts=4):
+              encoded = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
+              for attempt in range(attempts):
+                  try:
+                      token = oidc_token()  # Fresh token for each retry, including a late final callback.
+                      with request(method, url, encoded, {'Authorization': 'Bearer ' + token,
+                                                         'Content-Type': 'application/json'}) as response:
+                          body = response.read()
+                          return json.loads(body) if body else None
+                  except urllib.error.HTTPError as error:
+                      retryable = error.code in (408, 429) or error.code >= 500
+                      print(f'Callback HTTP {error.code}, attempt {attempt + 1}/{attempts}', flush=True)
+                      if not retryable or attempt + 1 == attempts:
+                          raise InfrastructureError(f'API returned HTTP {error.code}') from None
+                      retry_after = error.headers.get('Retry-After', '')
+                      delay = min(30, int(retry_after)) if retry_after.isdigit() else 2 ** (attempt + 1)
+                  except (OSError, ValueError, KeyError) as error:
+                      if attempt + 1 == attempts:
+                          raise InfrastructureError('API/OIDC unavailable after bounded retries') from error
+                      delay = 2 ** (attempt + 1)
+                  time.sleep(delay)
+
+          def sandbox(command, mounts, output, timeout, input_data=b''):
+              name = 'hicommit-' + uuid.uuid4().hex
+              args = ['docker', 'run', '-i', '--rm', '--name', name, '--network', 'none', '--read-only',
+                      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '256m',
+                      '--pids-limit', '32', '--cpus', '1', '--user', '65534:65534',
+                      '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--ulimit', 'fsize=1048576:1048576']
+              for source, target, mode in mounts:
+                  args += ['--mount', f'type=bind,source={source},target={target},{mode}']
+              args += [IMAGE, 'sh', '-c', command]
+              timed_out = False
+              started = time.monotonic()
+              try:
+                  proc = subprocess.run(args, input=input_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        timeout=timeout, env=clean_env())
+                  exit_code = proc.returncode
+                  if exit_code == 125:
+                      raise InfrastructureError('Docker could not start grading sandbox')
+              except subprocess.TimeoutExpired:
+                  raise InfrastructureError('Sandbox startup or shutdown exceeded its deadline') from None
+              finally:
+                  subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, timeout=15, env=clean_env())
+              def read(name):
+                  path = output / name
+                  return path.read_bytes()[:OUTPUT_LIMIT].decode('utf-8', errors='replace') if path.exists() else ''
+              return dict(exit_code=exit_code, duration_ms=round((time.monotonic()-started)*1000),
+                          stdout=read('stdout'), stderr=read('stderr'), timed_out=(exit_code == 124),
+                          truncated=any((output / name).exists() and (output / name).stat().st_size > OUTPUT_LIMIT
+                                        for name in ('stdout','stderr')))
+
+          def clean_env():
+              return {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': '/tmp', 'LANG': 'C.UTF-8'}
+
+          def evaluate(testcase, execution):
+              expected = str(testcase['output']).rstrip('\n')
+              actual = execution['stdout'].rstrip('\n')
+              if execution['timed_out']:
+                  status = 'timeout'
+              elif execution['exit_code'] != 0 or execution['truncated']:
+                  status = 'error'
+              else:
+                  status = 'passed' if actual == expected else 'failed'
+              return dict(id=str(testcase['id']), testcase_version=testcase.get('testcase_version'),
+                          input=testcase['input'], expected_output=expected, actual_output=actual, status=status,
+                          exit_code=execution['exit_code'], signal=(execution['exit_code']-128 if execution['exit_code']>128 else None),
+                          stderr=execution['stderr'], duration_ms=execution['duration_ms'], timeout_ms=TIMEOUT_MS)
+
+          def main():
+              started = time.monotonic()
+              git = lambda *args: subprocess.check_output(['git', *args], env=clean_env())
+              message = git('show', '-s', '--format=%B', os.environ['GITHUB_SHA']).decode('utf-8').rstrip('\n')
+              if message.startswith(('[config]', 'Initialize')):
+                  print('Configuration commit: grading skipped')
+                  return 0
+              source = git('show', os.environ['GITHUB_SHA'] + ':main.c')
+              if len(source) > 65536:
+                  raise InfrastructureError('Source exceeds 64 KiB grading limit')
+              branch = os.environ['GITHUB_REF'].removeprefix('refs/heads/')
+              base_url = os.environ['HICOMMIT_API_BASE_URL'].rstrip('/')
+              parsed = urllib.parse.urlparse(base_url)
+              if parsed.scheme != 'https' or parsed.hostname != 'hicommit.com':
+                  raise InfrastructureError('Unexpected HiCommit API origin')
+              endpoint = base_url + '/problems/' + urllib.parse.quote(branch, safe='')
+              payload = dict(problem=branch, actor=os.environ['GITHUB_ACTOR'], run_id=os.environ['GITHUB_RUN_ID'],
+                             run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']), sha=os.environ['GITHUB_SHA'],
+                             workflow_name=os.environ['GITHUB_WORKFLOW'], execution_environment='ubuntu-24.04/docker',
+                             architecture=platform.machine(), runner_version='2.0.0', schema_version='1.0',
+                             commit_message=message, code=base64.b64encode(source).decode('ascii'), status='pending')
+              artifact = Path(os.environ['RUNNER_TEMP']) / 'hicommit-result'
+              artifact.mkdir(exist_ok=True)
+              (artifact / 'pending.json').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+              try:
+                  api('POST', endpoint + '/submission/result', payload)
+              except InfrastructureError as error:
+                  print(f'::warning::Pending callback unavailable: {error}; final callback will still be attempted')
+              stage = 'prepare_sandbox'
+              try:
+                  subprocess.run(['docker', 'pull', IMAGE], check=True, timeout=180, env=clean_env(),
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                  with tempfile.TemporaryDirectory(prefix='hicommit-') as work:
+                      work = Path(work)
+                      # Docker's unprivileged uid can traverse these dedicated directories only.
+                      work.chmod(0o755)
+                      source_dir, build_dir = work/'source', work/'build'
+                      source_dir.mkdir(mode=0o755); build_dir.mkdir(mode=0o777); build_dir.chmod(0o777)
+                      (source_dir/'main.c').write_bytes(source)
+                      stage = 'compile'
+                      compile_out = work/'compile'; compile_out.mkdir(mode=0o777); compile_out.chmod(0o777)
+                      result = sandbox('gcc --version | head -n 1 > /results/version; '
+                                       'exec gcc /source/main.c -o /work/program -std=c99 > /results/stdout 2>/results/stderr',
+                                       [(source_dir,'/source','readonly'),(build_dir,'/work','readonly=false'),
+                                        (compile_out,'/results','readonly=false')], compile_out, 45)
+                      payload.update(compile_exit_code=result['exit_code'],compile_duration_ms=result['duration_ms'],
+                                     compiler='gcc',compiler_version=(compile_out/'version').read_text().strip()[:255],
+                                     compile_command='gcc /source/main.c -o /work/program -std=c99',
+                                     compile_stdout=result['stdout'],compile_stderr=result['stderr'])
+                      if result['timed_out']:
+                          raise InfrastructureError('Compiler timeout')
+                      if result['exit_code'] != 0:
+                          payload['status'] = 'compile_error'
+                      else:
+                          stage = 'fetch_testcases'
+                          cases = api('GET', endpoint + '/testcases')
+                          if not isinstance(cases, list) or not cases:
+                              raise InfrastructureError('No valid testcase set returned')
+                          payload['testset_version'] = cases[0].get('testset_version')
+                          if cases[0].get('problem_version'):
+                              payload['problem_version'] = cases[0]['problem_version']
+                          stage = 'run_tests'
+                          results = []
+                          for index, testcase in enumerate(cases):
+                              out = work/f'test-{index}'; out.mkdir(mode=0o777); out.chmod(0o777)
+                              execution = sandbox('start=$(date +%s%N); '
+                                                  'timeout --kill-after=0.25s 2s /work/program > /results/stdout 2>/results/stderr; '
+                                                  'status=$?; end=$(date +%s%N); '
+                                                  'echo $(( (end-start)/1000000 )) > /results/duration_ms; exit "$status"',
+                                                  [(build_dir,'/work','readonly'),(out,'/results','readonly=false')],
+                                                  out, 20, (str(testcase['input']).rstrip('\n')+'\n').encode('utf-8'))
+                              if (out/'duration_ms').exists():
+                                  execution['duration_ms'] = int((out/'duration_ms').read_text().strip())
+                              results.append(evaluate(testcase, execution))
+                          passed = sum(t['status']=='passed' for t in results)
+                          status = 'error' if any(t['status'] in ('error','timeout') for t in results) else (
+                              'passed' if passed == len(results) else 'failed')
+                          payload.update(status=status, result=results, pass_count=passed, total_count=len(results))
+              except Exception as error:
+                  # Infrastructure failures remain distinct from an incorrect student answer.
+                  payload.update(status='error',error_type='infrastructure_error',error_stage=stage)
+                  payload.pop('pass_count', None); payload.pop('total_count', None); payload.pop('result', None)
+                  print(f'::error::Grading infrastructure failed at {stage}: {type(error).__name__}')
+              payload['duration'] = round(time.monotonic()-started)
+              # Durable artifact is prepared before trying to send the final callback.
+              (artifact/'final.json').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+              api('POST', endpoint + '/submission/result', payload)
+              print(f'Final callback accepted: {payload["status"]}')
+              return 1 if payload.get('error_type') == 'infrastructure_error' else 0
+
+          if __name__ == '__main__':
+              try:
+                  sys.exit(main())
+              except Exception as error:
+                  print(f'::error::Runner could not complete: {type(error).__name__}: {error}')
+                  sys.exit(1)
+          PYTHON
+      - name: Preserve callback payloads for diagnosis
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hicommit-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hicommit-result/*.json
+          retention-days: 7
+          if-no-files-found: ignore
